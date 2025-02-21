@@ -1,4 +1,4 @@
-# Financial-Services
+# Finance
 
 ## Risk Management, Financial Trading, Real Estate Development
 
