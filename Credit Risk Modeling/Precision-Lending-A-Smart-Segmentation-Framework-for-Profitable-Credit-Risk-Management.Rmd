@@ -1,0 +1,1172 @@
+---
+title: 'Precision Lending: A Smart Segmentation Framework for Profitable Credit Risk
+  Management'
+output:
+  html_document:
+    df_print: paged
+date: "2025-07-26"
+runtime: shiny
+---
+
+# I. Executve Summary
+
+This project presents a comprehensive credit risk analysis built on simulated data from 3,240 customers, aimed at improving the profitability and stability of lending portfolios. By examining key behavioral and financial factors such as cure rates, recovery outcomes, time to default, credit utilization, and interest rate performance, the analysis segmented customers into four distinct profiles: Prime, Risky, Volatile, and Emerging. Each group revealed unique repayment behaviors and profit contributions. Notably, the Emerging and Risky segments, despite showing higher likelihood of default, demonstrated strong recovery and revenue potential when supported by structured repayment options and active management. In contrast, Volatile customers exhibited earlier repayment but limited financial recovery, indicating a need for more conservative loan structures upfront.
+
+To apply these insights effectively, the project introduced an interactive Customer Risk Profile Dashboard, which enables real-time identification of borrowers who meet key risk conditions, including high utilization, missed payments, elevated debt-to-income ratios, and short credit history. The dashboard allows lenders to filter between 50 and 500 customers based on capacity and budget constraints, making it suitable for teams of varying scale. Combined with recommended intervention strategies such as repayment restructuring, utilization-based incentives, credit access controls, and financial guidance, this framework offers a scalable, data-driven model to guide credit decisions. In doing so, it strengthens lending profitability while supporting forward-looking risk control and operational efficiency.
+
+# II. Data Preparation
+
+Firstly, this step prepares and preprocesses simulated transactional, customer, and loan datasets extracted from a structured SQL schema. The objective is to ensure the data is cleaned, validated, and formatted properly for downstream visualizations and analyses that reflect meaningful credit risk insights.
+
+The script performs date formatting, categorical transformations, and duplicate removal to make the data ready for visual exploration. Specifically, it segments customers into four behavioral quadrants (Prime, Risky, Volatile, and Emerging) based on credit and risk scores, and groups credit utilization into interpretable ranges. These transformations align the raw data with the visual and analytical outputs presented throughout the project, enabling accurate representation of trends, segmentation, risk levels, and portfolio behavior in charts and dashboards.
+
+```{r Prepare-the-data}
+
+# === Load all required libraries once ===
+library(tidyverse)
+library(ggplot2)
+library(scales)
+library(lubridate)
+
+# === Load all datasets ===
+transaction_data <- read.csv("data/transaction.csv", sep = ";", header = TRUE)
+customer_data    <- read.csv("data/customer.csv", sep = ";", header = TRUE)
+loan_data        <- read.csv("data/loan.csv", sep = ";", header = TRUE)
+
+# === Clean and preprocess transaction data ===
+transaction_data <- transaction_data %>%
+  mutate(
+    TransactionDate  = as.Date(TransactionDate, format = "%Y-%m-%d"),
+    TransactionType  = as.factor(TransactionType),
+    AccountType      = as.factor(AccountType),
+    TransactionMonth = format(TransactionDate, "%Y-%m")
+  ) %>%
+  distinct(TransactionID, .keep_all = TRUE)
+
+# === Validate and preprocess customer data ===
+if (!"RiskScore" %in% colnames(customer_data)) {
+  stop("Column 'RiskScore' not found in the dataset.")
+}
+
+customer_data <- customer_data %>%
+  mutate(
+    CreditScore = as.numeric(CreditScore),
+    RiskScore   = as.numeric(RiskScore),
+    CreditUtilGroup = case_when(
+      CreditUtilization < 25 ~ "<25%",
+      CreditUtilization < 50 ~ "25–50%",
+      CreditUtilization < 75 ~ "50–75%",
+      TRUE ~ ">75%"
+    ),
+    Quadrant = case_when(
+      CreditScore >= 600 & RiskScore >= 50 ~ "Volatile",
+      CreditScore >= 600 & RiskScore < 50  ~ "Prime",
+      CreditScore < 600  & RiskScore >= 50 ~ "Risky",
+      CreditScore < 600  & RiskScore < 50  ~ "Emerging"
+    )
+  ) %>%
+  drop_na(Quadrant)
+
+# === Clean and preprocess loan data ===
+loan_data <- loan_data %>%
+  mutate(
+    StartDate    = as.Date(StartDate, format = "%Y-%m-%d"),
+    EndDate      = as.Date(EndDate, format = "%Y-%m-%d"),
+    DefaultDate  = as.Date(DefaultDate, format = "%Y-%m-%d"),
+    Status       = as.character(Status)
+  ) %>%
+  filter(!is.na(StartDate)) %>%
+  distinct(LoanID, .keep_all = TRUE)  # Always ensure uniqueness per loan
+
+```
+
+# III. Spending Pattern
+
+```{r Spending-Pattern}
+
+# Compute average withdrawal and deposit
+monthly_txn <- transaction_data %>%
+  filter(TransactionType %in% c("Withdrawal", "Deposit")) %>%
+  group_by(TransactionMonth, TransactionType) %>%
+  summarise(AverageAmount = mean(Amount, na.rm = TRUE), .groups = "drop")
+
+# Compute average balance per month
+monthly_balance <- transaction_data %>%
+  group_by(TransactionMonth) %>%
+  summarise(AverageAmount = mean(Balance, na.rm = TRUE), .groups = "drop") %>%
+  mutate(TransactionType = "Balance")
+
+# Combine for plotting
+combined_data <- bind_rows(monthly_txn, monthly_balance)
+
+# Plot
+ggplot(combined_data, aes(x = TransactionMonth, y = AverageAmount, color = TransactionType, group = TransactionType)) +
+  geom_line(data = subset(combined_data, TransactionType == "Withdrawal"), size = 1.2) +
+  geom_point(data = subset(combined_data, TransactionType == "Deposit"), size = 3) +
+  geom_line(data = subset(combined_data, TransactionType == "Deposit"), linetype = "dashed", size = 1) +
+  geom_line(data = subset(combined_data, TransactionType == "Balance"), size = 1.2) +
+  scale_color_manual(values = c("Withdrawal" = "red", "Deposit" = "#00945c", "Balance" = "steelblue")) +
+  theme_minimal() +
+  labs(
+    title = "Average Monthly Withdrawal, Deposit & Balance Trends",
+    x = "Month",
+    y = "Average Amount",
+    color = "Metric"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+## Deposit Behavior
+
+This chart illustrates average monthly patterns in customer deposits, withdrawals, and account balances, offering a behavioral view of liquidity and financial discipline. The deposit line (green, dashed with dots) shows a repeating cycle of sharp spikes and drops, indicating irregular income patterns. These fluctuations suggest that many customers may receive funds periodically, such as through quarterly bonuses, contract payments, or seasonal employment. The inconsistent nature of these inflows points to income volatility, a known contributing factor to credit risk. It reflects a customer base that does not have stable monthly earnings, which could compromise their ability to meet fixed financial obligations consistently.
+
+## Withdrawal vs Balance Trend
+
+In contrast, the withdrawal line (red) demonstrates a highly reactive pattern, closely mirroring and often outpacing deposits. This suggests that customers tend to spend heavily following income inflows, with little delay or retention. In several months, withdrawals rise even as deposits fall, implying a reliance on stored balances or possibly external credit to maintain spending. This behavior may indicate overconsumption or cash flow stress, particularly around late 2019 and late 2020, where spending sharply spiked. The balance line (blue), however, remains relatively stable across the entire timeline. While this might initially seem positive, it masks the underlying volatility in deposits and withdrawals. A flat balance line amidst turbulent inflows and outflows suggests that customers may be barely maintaining their balances, without accumulating savings — a sign of financial fragility.
+
+## Trends Convention
+
+Taken together, the trends reveal customers with limited financial buffers, irregular income, and reactive spending habits. These behaviors may correlate with higher credit risk, particularly if unexpected income shocks occur. The static nature of the average balance might mislead traditional scoring models, which often treat balance as a risk mitigator. In reality, these customers may already be under financial stress, making them more vulnerable to default if economic conditions deteriorate or income sources are disrupted. The trends underscore the importance of incorporating behavioral volatility and spending patterns into credit assessments, not just static financial indicators; this would produce more risk-alert pictures if their risk scores are incorporated.
+
+# IV. Risk Score Buckets
+
+```{r Risk-Score-Buckets}
+
+# Categorize risk score
+customer_data <- customer_data %>%
+  mutate(RiskBucket = case_when(
+    RiskScore < 25 ~ "Low (Score < 25)",
+    RiskScore < 50 ~ "Moderate (25–49)",
+    RiskScore < 75 ~ "High (50–74)",
+    TRUE ~ "Critical (≥75)"
+  )) %>%
+  mutate(RiskBucket = factor(
+    RiskBucket,
+    levels = c("Critical (≥75)", "High (50–74)", "Moderate (25–49)", "Low (Score < 25)")
+  ))
+
+# Custom colors
+risk_colors <- c(
+  "Moderate (25–49)" = "royalblue",
+  "Low (Score < 25)" = "#1b9e77",
+  "Critical (≥75)" = "#FF2E2E",
+  "High (50–74)" = "orange"
+)
+
+# Plot faceted histogram
+ggplot(customer_data, aes(x = CreditScore, fill = RiskBucket)) +
+  geom_histogram(binwidth = 10, color = "black", alpha = 0.7) +
+  facet_grid(rows = vars(RiskBucket), scales = "fixed") +
+  scale_fill_manual(values = risk_colors, name = "Risk Score Segment") +
+  theme_minimal(base_size = 10) +
+  labs(
+    title = "Credit Score Distribution by Risk Category",
+    x = "Credit Score",
+    y = "Count"
+  ) +
+  theme(
+    strip.text.y = element_blank(),
+    strip.background = element_blank(),
+    panel.border = element_rect(color = "grey80", fill = NA, size = 0.8),
+    panel.spacing = unit(1, "lines"),
+    legend.position = "right"
+  )
+
+```
+
+## Score-Risk Gap
+
+Building on the previous analysis of spending patterns, where customers demonstrated income irregularity, reactive withdrawal behavior, and limited balance growth, this chart deepens the understanding of credit risk by showing how credit scores are distributed across internal risk categories. The expectation might be that customers with high credit scores would consistently appear in the lowest risk groups. However, the results show that many customers with strong credit scores, including those above 700, are still classified within Critical and High risk categories. This suggests that credit scores alone do not fully capture the behavioral and financial stress indicators that internal risk scoring systems are designed to detect.
+
+## Risk Score towards Lending Impacts
+
+For the business, this presents a compelling case for incorporating broader data points into lending decisions. Customers with solid credit histories may still pose elevated risk if they exhibit signs of financial strain, such as volatile deposit behavior or overreliance on available credit. At the same time, some lower-credit-score customers are placed in lower risk segments, indicating more stable or responsible day-to-day financial behavior. These findings validate the need for a credit risk approach that goes beyond static scoring and considers real-time behavioral indicators. By doing so, institutions can better align credit offers, pricing, and risk controls with actual financial health. This enables a more accurate and fair assessment of customer profiles and supports smarter portfolio management that reduces losses while preserving valuable relationships.
+
+# V. Credit and Risk Score Segmentation
+
+```{r Customer-Segmentation}
+
+# === Customer Segmentation Scatter Plot ===
+
+# Define size mapping and quadrant colors (used for visual encoding only)
+size_map <- c("<25%" = 1.5, "25–50%" = 2.5, "50–75%" = 3.5, ">75%" = 4.5)
+quad_colors <- c(
+  "Volatile" = "royalblue",
+  "Prime" = "#1b9e77",
+  "Risky" = "#FF2E2E",
+  "Emerging" = "orange"
+)
+
+# Assign point size based on CreditUtilGroup
+customer_data$PointSize <- size_map[customer_data$CreditUtilGroup]
+
+# Plot
+ggplot(customer_data, aes(x = CreditScore, y = RiskScore)) +
+  geom_vline(xintercept = 600, linetype = "dashed", color = "gray60") +
+  geom_hline(yintercept = 50, linetype = "dashed", color = "gray60") +
+  geom_point(aes(size = PointSize, fill = Quadrant), shape = 21, color = "black", alpha = 0.9) +
+  scale_size_identity(
+    guide = "legend",
+    name = "Credit Utilization",
+    breaks = c(1.5, 2.5, 3.5, 4.5),
+    labels = c("<25%", "25–50%", "50–75%", ">75%")
+  ) +
+  scale_fill_manual(
+    name = "Customer Segment",
+    values = quad_colors,
+    guide = guide_legend(override.aes = list(size = 6))
+  ) +
+  theme_minimal(base_size = 10) +
+  labs(
+    title = "Customer Segmentation by Credit Score and Risk Score",
+    x = "Credit Score",
+    y = "Risk Score"
+  )
+
+```
+
+Expanding on the previous insights, this segmentation chart categorizes 3,240 customers from the dataset into four distinct groups based on the combination of credit score and internal risk score. Each point represents an individual customer, with bubble size indicating credit utilization. The four segments include Volatile, Prime, Risky, and Emerging, each revealing meaningful behavioral and financial traits. Volatile customers display high credit scores paired with elevated risk scores, often accompanied by high utilization, suggesting financial instability. Prime customers reflect lower risk and stronger credit performance, forming a stable base. Risky customers concentrate in the lower credit and higher risk space, highlighting the most vulnerable portion of the portfolio. Emerging customers hold lower credit and risk scores, which may point to new or underdeveloped financial histories.
+
+From a business standpoint, this segmentation supports more targeted credit and risk management strategies. Customers in the Volatile and Risky segments frequently exhibit high utilization, which raises concerns about financial strain and repayment capacity. These profiles benefit from close monitoring, adjusted terms, or proactive engagement to prevent delinquency. Prime customers may be considered for expanded credit access or reward programs due to their reliability. Emerging customers represent an opportunity to foster credit maturity through tailored financial products and education. This view adds depth to earlier observations by connecting behavioral trends with structured risk assessment, enabling more informed decisions across lending, pricing, and portfolio oversight.
+
+# VI. Annual Default Rate by Customer Segment
+
+```{r Annual-Default-Rate-by-Segment}
+
+# === Default Rate by Quadrant ===
+
+library(shiny)
+
+# === Prepare merged data ===
+loan_merged <- loan_data %>%
+  inner_join(customer_data %>% select(CustomerID, Quadrant), by = "CustomerID") %>%
+  mutate(
+    Defaulted = ifelse(Status == "Defaulted", 1, 0),
+    YearMonth = format(StartDate, "%Y-%m")
+  ) %>%
+  filter(
+    StartDate >= as.Date("2018-01-01"),
+    StartDate <= as.Date("2023-12-31")
+  ) %>%
+  distinct(LoanID, .keep_all = TRUE)
+
+# === UI ===
+ui <- fluidPage(
+  titlePanel("Monthly Default Rate Trends by Customer Quadrant"),
+  selectInput("year", "Select Year:", choices = as.character(2018:2023), selected = "2021"),
+  plotOutput("defaultRatePlot", height = "600px")
+)
+
+# === Server ===
+server <- function(input, output, session) {
+  filtered_data <- reactive({
+    # Filter for selected year
+    filtered <- loan_merged %>%
+      filter(format(StartDate, "%Y") == input$year)
+
+    # Monthly default rates
+    df_monthly <- filtered %>%
+      group_by(Quadrant, YearMonth) %>%
+      summarise(
+        TotalLoans = n(),
+        Defaults = sum(Defaulted, na.rm = TRUE),
+        DefaultRate = Defaults / TotalLoans,
+        .groups = "drop"
+      ) %>%
+      mutate(
+        YearMonthDate = as.Date(paste0(YearMonth, "-01")),
+        Quadrant = factor(Quadrant, levels = names(quad_colors))
+      )
+
+    # Overall default rate for facet labels
+    overall_default_rate <- filtered %>%
+      group_by(Quadrant) %>%
+      summarise(
+        Defaults = sum(Defaulted, na.rm = TRUE),
+        TotalLoans = n(),
+        OverallDefaultRate = Defaults / TotalLoans,
+        .groups = "drop"
+      ) %>%
+      mutate(
+        Quadrant = factor(Quadrant, levels = names(quad_colors)),
+        Label = paste0(Quadrant, " (", percent(OverallDefaultRate, accuracy = 0.1), ")")
+      )
+
+    list(monthly = df_monthly, overall = overall_default_rate)
+  })
+
+  output$defaultRatePlot <- renderPlot({
+    data_list <- filtered_data()
+    df_monthly <- data_list$monthly
+    overall_default_rate <- data_list$overall
+
+    labels <- overall_default_rate$Label
+    names(labels) <- overall_default_rate$Quadrant
+
+    ggplot(df_monthly, aes(x = YearMonthDate, y = DefaultRate, color = Quadrant)) +
+      geom_line(size = 1.2) +
+      geom_point(size = 2) +
+      facet_wrap(~Quadrant, ncol = 1, labeller = labeller(Quadrant = labels)) +
+      scale_color_manual(values = quad_colors) +
+      scale_y_continuous(labels = percent_format(accuracy = 1)) +
+      scale_x_date(date_breaks = "1 month", date_labels = "%b") +
+      labs(
+        title = paste("Default Rate Trends by Quadrant in", input$year),
+        x = "Month",
+        y = "Default Rate",
+        color = "Quadrant"
+      ) +
+      theme_minimal() +
+      theme(
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+        strip.text = element_text(size = 14, face = "bold", color = "grey30"),
+        legend.position = "none"
+      )
+  })
+}
+
+# === Run the Shiny App ===
+shinyApp(ui, server)
+
+```
+
+## Risky Segment
+
+Let's take for example between 2018 and 2023 default rate to get an overall sense of changes. The comparison between default trends in these two years shows that Risky customers, who previously carried the highest default rate, have become more stable over time. Their average default rate dropped from fifty percent to just over thirty percent, making them the most improved segment. This shift suggests that the institution's internal risk controls or underwriting adjustments may have been effective in tightening exposure to high-risk borrowers. It also points to a better understanding of this group’s behavior, which supports earlier insights that customer classification based on behavior, not just score, leads to better outcomes.
+
+## Emerging Segment
+
+On the other hand, the Emerging segment now shows the highest average default rate, rising from under thirty-eight percent to over forty percent. These customers were previously viewed as low exposure due to their low credit and low risk scores, but their growing instability challenges that assumption. This development reinforces the need to reassess how new or developing credit profiles are managed. It also supports earlier findings that static risk scores do not capture the full financial reality and that behavioral signals, such as high utilization or erratic transaction activity, are more predictive in anticipating defaults.
+
+## Volatile vs Prime Segment
+
+Volatile and Prime customers maintained relatively similar default levels across both years, though neither group displayed consistent month-to-month stability. This pattern confirms prior observations that even high-score customers can become vulnerable under certain financial conditions, especially if spending patterns are reactive or balances are sustained artificially. This continuation validates the segmentation model that accounts for both score-based and behavioral dimensions, and it stresses the importance of early intervention programs tailored to each quadrant.
+
+## Lending Implication
+
+Overall, these results help validate the earlier segmentation framework and spending analysis by providing outcome-based evidence. They show that risk is not fixed and that performance patterns evolve over time. The ability to track these changes helps institutions make better decisions around credit limits, pricing strategies, and portfolio monitoring. These findings provide real-world feedback that supports a more dynamic credit model, helping to align customer strategy with actual behavioral risk and long-term portfolio health.
+
+# VII. Default Periods of Loan Types per Customer Segment
+
+```{r Periods-of-Defualt}
+
+# === Time to Default Violin Chart by Year and Quadrant ===
+
+library(shiny)
+
+# === Prepare filtered loan-default dataset ===
+loan_defaulted <- loan_data %>%
+  inner_join(customer_data %>% select(CustomerID, Quadrant), by = "CustomerID") %>%
+  filter(!is.na(DefaultDate)) %>%
+  distinct(LoanID, .keep_all = TRUE) %>%
+  mutate(
+    TimeToDefault = as.numeric(difftime(DefaultDate, StartDate, units = "days")),
+    Year = year(StartDate),
+    Quadrant = factor(Quadrant, levels = names(quad_colors))
+  )
+
+# === UI ===
+ui <- fluidPage(
+  tags$head(tags$style(HTML("
+    .top-bar {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      margin-bottom: 20px;
+      margin-top: 10px;
+    }
+  "))),
+  div(class = "top-bar",
+      selectInput("year", "Select Year:", choices = sort(unique(loan_defaulted$Year)), selected = 2023)
+  ),
+  plotOutput("violinPlot", height = "600px")
+)
+
+# === Server ===
+server <- function(input, output) {
+  output$violinPlot <- renderPlot({
+    df <- loan_defaulted %>%
+      filter(Year == input$year)
+
+    ggplot(df, aes(x = Quadrant, y = TimeToDefault, fill = Quadrant)) +
+      geom_violin(trim = FALSE, alpha = 0.6) +
+      geom_boxplot(width = 0.12, outlier.shape = NA, color = "black", fill = "white", alpha = 0.7) +
+      scale_fill_manual(values = quad_colors) +
+      labs(
+        title = paste("Time to Default Distribution by Quadrant in", input$year),
+        x = "Customer Quadrant",
+        y = "Time to Default (Days)"
+      ) +
+      theme_minimal() +
+      theme(
+        plot.title = element_text(size = 18, face = "bold", hjust = 0.5),
+        axis.title.x = element_text(size = 14, face = "bold", margin = margin(t = 20)),
+        axis.title.y = element_text(size = 14, face = "bold", margin = margin(r = 20)),
+        axis.text.x = element_text(size = 13, face = "bold"),
+        axis.text.y = element_text(size = 13),
+        legend.position = "none"
+      )
+  })
+}
+
+# === Run the Shiny App ===
+shinyApp(ui = ui, server = server)
+
+```
+
+After understanding the changes of default rates, what also is the aspect to the preparation of those default rates per customer segment is their time horizons to being default. Between 2018 and 2023, the shift in time to default patterns reveal critical behavioral changes across all customer segments that should directly influence credit risk management strategies.
+
+## Prime vs Risky Segment
+
+In 2018, Prime and Risky customers exhibited longer median times before default, which afforded more operational flexibility for intervention and collections. However, the 2023 distribution shows a stark compression in this buffer period, with all four quadrants—Volatile, Prime, Risky, and Emerging—defaulting sooner, regardless of their original risk classification. This acceleration in default onset suggests rising short-term vulnerability even among previously reliable groups.
+
+For the Prime segment, the earlier occurrence of defaults despite high credit scores implies a weakening in the predictive strength of traditional scoring models. The assumption that high-score borrowers will uphold their credit obligations over extended periods no longer holds with the same confidence. This finding urges financial institutions to supplement scoring mechanisms with behavioral and transactional indicators that can detect early instability even in top-tier profiles.
+
+## Emerging vs Volatile Segment
+
+The Emerging and Volatile segments, which had already shown elevated default rates and volatility in past results, are now confirming those risks with increasingly front-loaded default behaviors. These groups not only carry inherent repayment uncertainty but now also default earlier, reducing the time horizon available for mitigation. Risk managers should prioritize proactive engagement tools and short-term monitoring cycles for these customers, especially during the first few months of their loan or credit usage.
+
+## Default Horizon Indication
+
+In practical terms, the trend across all segments indicates a fundamental reduction in response time for early warning systems. Loan servicing teams and automated credit systems must now act more decisively within narrower windows to manage exposure effectively. Coupled with previous insights on utilization and risk segmentation, these updated time-to-default trends highlight the need to redesign risk protocols with a stronger emphasis on agility, early pattern recognition, and integrated customer intelligence.
+
+# VIII Cure and Recovery Rate by Customer Segment
+
+```{r Cure-and-Recovery-Rate-by-Segment}
+
+# === Cure & Recovery Rate by Quadrant ===
+
+library(shiny)
+
+# === Prepare merged and filtered dataset ===
+loan_trends <- loan_data %>%
+  inner_join(customer_data %>% select(CustomerID, Quadrant), by = "CustomerID") %>%
+  filter(!is.na(Quadrant)) %>%
+  mutate(
+    YearMonth = format(StartDate, "%Y-%m"),
+    Year = year(StartDate),
+    Month = floor_date(StartDate, "month")
+  ) %>%
+  filter(StartDate >= as.Date("2018-01-01") & StartDate <= as.Date("2023-12-31")) %>%
+  distinct(LoanID, .keep_all = TRUE)
+
+# === UI ===
+ui <- fluidPage(
+  titlePanel("Monthly Cure & Recovery Rate by Customer Quadrant"),
+  fluidRow(
+    column(6, selectInput("year", "Select Year:", choices = as.character(2018:2023), selected = "2023")),
+    column(6, selectInput("metric", "Select Metric:", choices = c("Cure Rate", "Recovery Rate"), selected = "Cure Rate"))
+  ),
+  plotOutput("trendPlot", height = "600px")
+)
+
+# === Server ===
+server <- function(input, output, session) {
+  filtered_data <- reactive({
+    df <- loan_trends %>%
+      filter(Year == as.integer(input$year)) %>%
+      group_by(Quadrant, Month) %>%
+      summarise(
+        CureRate = mean(Status != "Defaulted", na.rm = TRUE),
+        RecoveryRate = mean(TotalPaid / PrincipalAmount, na.rm = TRUE),
+        .groups = "drop"
+      ) %>%
+      mutate(
+        Quadrant = factor(Quadrant, levels = names(quad_colors))
+      )
+
+    label_data <- df %>%
+      group_by(Quadrant) %>%
+      summarise(
+        OverallValue = mean(if (input$metric == "Cure Rate") CureRate else RecoveryRate, na.rm = TRUE),
+        .groups = "drop"
+      ) %>%
+      mutate(
+        Label = paste0(Quadrant, " (", percent(OverallValue, accuracy = 0.1), ")"),
+        Quadrant = factor(Quadrant, levels = names(quad_colors))
+      )
+
+    list(monthly = df, labels = label_data)
+  })
+
+  output$trendPlot <- renderPlot({
+    data_list <- filtered_data()
+    df <- data_list$monthly
+    labels <- setNames(data_list$labels$Label, data_list$labels$Quadrant)
+    metric_col <- if (input$metric == "Cure Rate") "CureRate" else "RecoveryRate"
+
+    ggplot(df, aes(x = Month, y = .data[[metric_col]], color = Quadrant, group = Quadrant)) +
+      geom_line(size = 1.2) +
+      geom_point(size = 2.5) +
+      facet_wrap(~Quadrant, ncol = 1, labeller = labeller(Quadrant = labels)) +
+      scale_color_manual(values = quad_colors) +
+      scale_y_continuous(labels = percent_format(accuracy = 1)) +
+      scale_x_date(date_breaks = "1 month", date_labels = "%b") +
+      labs(
+        title = paste(input$metric, "by Quadrant in", input$year),
+        x = "Month",
+        y = input$metric,
+        color = "Quadrant"
+      ) +
+      theme_minimal() +
+      theme(
+        axis.text.x = element_text(angle = 45, hjust = 1, size = 11),
+        axis.text.y = element_text(size = 11),
+        axis.title = element_text(size = 14, face = "bold"),
+        plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+        strip.text = element_text(size = 14, face = "bold", color = "grey30"),
+        legend.position = "none"
+      )
+  })
+}
+
+# === Run the Shiny App ===
+shinyApp(ui = ui, server = server)
+
+```
+
+## Risky Segment Leads in Cure Rate Improvement
+
+The progression of cure and recovery rates from 2018 to 2023 reveals evolving repayment dynamics across customer segments that merit a recalibration of credit treatment and portfolio strategy. In 2018, cure rates were led by the Volatile and Emerging segments, each averaging above 64 percent, indicating relatively high responsiveness to early repayment strategies. However, by 2023, the Risky segment experienced a significant turnaround, increasing its cure rate from approximately 52 percent to nearly 70 percent. This shift suggests that borrowers in this category, while still high risk at the time of default, became more likely to re-engage with repayment efforts, possibly as a result of stronger credit monitoring, tighter eligibility filters, or restructured collection practices that offered a viable path to resolution.
+
+## Emerging Customers Show High Long-Term Recovery
+
+Conversely, the Emerging segment, which once demonstrated solid cure behavior, saw its performance decline slightly in 2023, falling to a cure rate just under 60 percent. Despite this, the same group recorded the highest average recovery rate, exceeding 209 percent in that year, a significant leap from its previous position. This suggests that although Emerging customers may falter more often on repayment, they are increasingly able to settle obligations after default through lump-sum payments, renegotiated terms, or long-tail collections. This combination of lower cure but exceptionally high recovery implies that their credit may need to be structured with greater emphasis on flexible resolution options, including post-default pathways that anticipate delayed but substantial repayment.
+
+## Stable Patterns with Mixed Performance in Prime and Volatile
+
+Meanwhile, the Prime and Volatile segments showed minimal movement in cure and recovery behavior between the two periods. Prime customers maintained a cure rate around 63 percent and a recovery rate below 150 percent, reflecting consistent but moderate repayment discipline. Volatile customers, on the other hand, posted a 2023 cure rate of approximately 63 percent but delivered a notably weaker recovery result at 138 percent. This divergence between their willingness to return to repayment and the limited financial recovery afterward suggests that credit exposure to Volatile borrowers may be only partially recoverable, requiring tighter upfront terms and limited exposure per account to safeguard against incomplete settlements.
+
+## Aligning Credit Strategy with Repayment Behavior
+
+Taken together, these patterns reinforce the importance of linking repayment behavior to tailored credit strategies at the segment level. Where one group excels in cure but underdelivers on recovery, and another defaults frequently but eventually pays back in full, the business must respond with differentiated lending terms, risk buffers, and collection practices. To refine this alignment and support stronger portfolio performance, the next necessary step is to assess the Weighted Average Interest Rate (WAIR) by segment. This will clarify whether current pricing strategies are proportionate to actual repayment outcomes and whether credit terms sufficiently reflect the cost of risk, allowing for more sustainable profitability and stronger risk-adjusted growth.
+
+# IX. Weighted Average Interest Rate (WAIR) by Customer Segment
+
+```{r Loan-WAIR-by-Segment}
+
+# === WAIR by Loan Type and Quadrant ===
+
+library(shiny)
+
+# === Prepare merged and filtered dataset ===
+loan_wair <- loan_data %>%
+  inner_join(customer_data %>% select(CustomerID, Quadrant), by = "CustomerID") %>%
+  filter(
+    !is.na(PrincipalAmount),
+    !is.na(InterestRate),
+    !is.na(StartDate)
+  ) %>%
+  mutate(
+    Year = year(StartDate)
+  ) %>%
+  distinct(LoanID, .keep_all = TRUE)
+
+# === UI ===
+ui <- fluidPage(
+  tags$head(tags$style(HTML("
+    .top-bar {
+      display: flex;
+      justify-content: center;
+      margin-top: 15px;
+      margin-bottom: 20px;
+    }
+  "))),
+  
+  div(class = "top-bar",
+      selectInput("year", "Select Year:", choices = sort(unique(loan_wair$Year)), selected = 2023)
+  ),
+  
+  plotOutput("wairLollipop", height = "750px")
+)
+
+# === Server ===
+server <- function(input, output) {
+  output$wairLollipop <- renderPlot({
+    df_filtered <- loan_wair %>%
+      filter(Year == as.integer(input$year)) %>%
+      group_by(Quadrant, LoanType) %>%
+      summarise(
+        WAIR = sum(InterestRate * PrincipalAmount, na.rm = TRUE) / sum(PrincipalAmount, na.rm = TRUE),
+        .groups = "drop"
+      ) %>%
+      mutate(
+        Quadrant = factor(Quadrant, levels = names(quad_colors)),
+        LoanType = reorder_within(LoanType, WAIR, Quadrant)
+      )
+
+    ggplot(df_filtered, aes(x = WAIR, y = LoanType, color = Quadrant)) +
+      geom_segment(aes(x = 0, xend = WAIR, y = LoanType, yend = LoanType), size = 1.2) +
+      geom_point(size = 4) +
+      scale_color_manual(values = quad_colors) +
+      scale_y_discrete(labels = function(x) gsub("___.*", "", x)) +
+      scale_x_continuous(breaks = seq(0, 12, by = 2), limits = c(0, 12)) +
+      facet_wrap(~Quadrant, ncol = 1, scales = "free_y") +
+      labs(
+        title = paste("Weighted Average Interest Rate (WAIR) by Loan Type and Quadrant –", input$year),
+        x = "WAIR (%)",
+        y = "Loan Type"
+      ) +
+      theme_minimal() +
+      theme(
+        plot.margin = margin(20, 20, 20, 20),
+        strip.text = element_text(size = 14, face = "bold", color = "grey30"),
+        plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),
+        axis.title = element_text(size = 14, face = "bold"),
+        axis.text = element_text(size = 12),
+        legend.position = "none"
+      )
+  })
+}
+
+# === Reordering Helper ===
+reorder_within <- function(x, by, within, fun = mean, sep = "___", ...) {
+  new_x <- paste(x, within, sep = sep)
+  stats::reorder(new_x, by, FUN = fun)
+}
+
+# === Run the App ===
+shinyApp(ui, server)
+
+```
+
+## Interest Rate Sensitivity and Pricing Discipline
+
+Between 2018 and 2023, the Prime segment maintained a relatively stable WAIR across loan types, hovering just above 9 percent. This suggests that lenders have preserved pricing discipline for this group, treating them as low-risk, high-volume borrowers with predictable repayment patterns. The flat trend in WAIR aligns with their consistent cure and recovery profiles, supporting continued confidence in extending credit at modest rates. This consistency underscores a sound balance between profitability and risk containment for the Prime group.
+
+## Elevated Pricing to Offset Delinquency
+
+The Emerging quadrant reveals a deliberate elevation in WAIR by 2023, with most loan types priced near or above 10 percent. This pricing shift reflects a strategic attempt to counterbalance the segment’s declining cure performance and greater reliance on long-term recoveries. By charging higher interest upfront, lenders are likely hedging against prolonged default timelines and the capital cost of deferred collections. The Emerging group’s interest structure has evolved to support back-loaded repayment behavior, indicating a more conservative underwriting stance.
+
+## Aggressive Pricing Amid Improved Outcomes
+
+The Risky segment saw noticeable WAIR increases across the board, particularly for business loans, which reached close to 11 percent by 2023. Interestingly, this surge coincides with their improved cure rates during the same period. The upward adjustment in interest may represent a cautious response to their formerly volatile default patterns. Despite improvements in repayment behavior, lenders appear to be enforcing stricter margin requirements, ensuring that risk-adjusted returns remain viable even as engagement improves.
+
+## Volatile Segment Repricing Reflects Limited Progress
+
+The Volatile quadrant displays marginal changes in WAIR from 2018 to 2023, with most loans priced slightly below 10 percent. This restrained pricing strategy suggests that while some repayment behaviors have improved, the overall risk posture of this segment remains cautiously monitored. The moderate adjustment signals that institutions have not observed sufficient progress to warrant meaningful revaluation of credit terms, leaving the WAIR structure only slightly refined from five years prior. Therefore, to tackle this effectively, we need exact survival rates of the loans for those specific customer quadrants upon those WAIR to take actions before they run on default.
+
+# X. Loan Survival Curve Analysis
+
+```{r Loan-Survival-Curve-Analysis}
+
+# Load libraries
+library(shiny)
+library(survival)
+library(survminer)
+library(scales)
+
+# Load and preprocess data
+customer_data <- read.csv("data/customer.csv", sep = ";", header = TRUE)
+loan_data <- read.csv("data/loan.csv", sep = ";", header = TRUE)
+
+loan_data <- loan_data %>%
+  filter(!is.na(StartDate) & !is.na(EndDate)) %>%
+  mutate(
+    StartDate = as.Date(StartDate, format = "%Y-%m-%d"),
+    EndDate = as.Date(EndDate, format = "%Y-%m-%d")
+  )
+
+customer_data <- customer_data %>%
+  mutate(
+    CreditUtilGroup = case_when(
+      CreditUtilization < 25 ~ "<25%",
+      CreditUtilization < 50 ~ "25–50%",
+      CreditUtilization < 75 ~ "50–75%",
+      TRUE ~ ">75%"
+    ),
+    Quadrant = case_when(
+      CreditScore >= 600 & RiskScore >= 50 ~ "Volatile",
+      CreditScore >= 600 & RiskScore < 50  ~ "Prime",
+      CreditScore < 600  & RiskScore >= 50 ~ "Risky",
+      CreditScore < 600  & RiskScore < 50  ~ "Emerging"
+    )
+  )
+
+loan_merged <- loan_data %>%
+  left_join(customer_data, by = "CustomerID") %>%
+  distinct(LoanID, .keep_all = TRUE) %>%
+  mutate(
+    StartDateNum = as.numeric(difftime(StartDate, min(StartDate, na.rm = TRUE), units = "days")),
+    EndDateNum = as.numeric(difftime(EndDate, min(StartDate, na.rm = TRUE), units = "days")),
+    Defaulted = ifelse(Status == "Defaulted", 1, 0)
+  )
+
+# UI
+ui <- fluidPage(
+  tags$head(
+    tags$style(HTML("
+      .title-bar {
+        text-align: center;
+        margin-top: 20px;
+        margin-bottom: 5px;
+      }
+      .selection-bar {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        margin-bottom: 20px;
+      }
+      .bottom-section {
+        display: flex;
+        justify-content: center;
+        margin-top: 10px;
+      }
+      .table-container {
+        background-color: #f8f9fa;
+        padding: 10px;
+        border-radius: 6px;
+      }
+      .selectize-input {
+        width: 300px !important;
+      }
+      .shiny-output-error {
+        display: none;
+      }
+    "))
+  ),
+  
+  div(class = "title-bar", h2("Survival Analysis by Loan Type and Quadrant")),
+  div(class = "selection-bar",
+      selectInput("quadrant", "Select Quadrant:",
+                  choices = c("Volatile", "Prime", "Risky", "Emerging"),
+                  selected = "Volatile")
+  ),
+  
+  plotOutput("survPlot", height = "500px"),
+  
+  div(class = "bottom-section",
+      div(class = "table-container", tableOutput("summaryTable"))
+  )
+)
+
+# Server
+server <- function(input, output) {
+  
+  filtered_data <- reactive({
+    loan_merged %>%
+      filter(Quadrant == input$quadrant) %>%
+      filter(EndDateNum > StartDateNum)
+  })
+  
+  output$survPlot <- renderPlot({
+    df <- filtered_data()
+    surv_fit <- survfit(Surv(StartDateNum, EndDateNum, Defaulted) ~ LoanType, data = df)
+    
+    # Define consistent palette for loan types
+    loan_type_colors <- c("Auto" = "royalblue", "Business" = "#1b9e77", "Mortgage" = "#FF2E2E", "Personal" = "orange")
+    
+    ggsurvplot(
+      surv_fit,
+      data = df,
+      legend.title = "Loan Type",
+      legend.labs = names(loan_type_colors),
+      palette = loan_type_colors,
+      surv.scale = "percent",
+      size = 1.2,
+      censor = TRUE,
+      conf.int = FALSE,
+      surv.median.line = "hv",
+      xlab = "Time (Days)",
+      ylab = "Survival Probability",
+      title = NULL
+    )$plot +
+      theme_minimal(base_size = 13) +
+      theme(
+        plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+        axis.title = element_text(size = 14, face = "bold"),
+        axis.text = element_text(size = 12)
+      )
+  })
+  
+  output$summaryTable <- renderTable({
+    df <- filtered_data()
+    loan_types <- unique(df$LoanType)
+    
+    summary_stats <- lapply(loan_types, function(type) {
+      surv_obj <- survfit(Surv(StartDateNum, EndDateNum, Defaulted) ~ 1, data = df %>% filter(LoanType == type))
+      median_time <- round(summary(surv_obj)$table["median"], 0)
+      max_time <- max(df %>% filter(LoanType == type) %>% pull(EndDateNum), na.rm = TRUE)
+      list(LoanType = type, `50% Survival` = median_time, `Max Survival` = max_time)
+    }) %>% bind_rows() %>%
+      mutate(
+        `50% Survival` = comma(`50% Survival`),
+        `Max Survival` = comma(`Max Survival`)
+      )
+    
+    summary_stats
+  }, striped = TRUE, bordered = TRUE, spacing = "s")
+}
+
+# Run the app
+shinyApp(ui = ui, server = server)
+
+```
+
+## Volatile Segment: Shorter Lifespan Signals Front-Loaded Risk
+
+The survival curve for the Volatile customer group indicates that the median loan lifespan hovers just below 8,200 days, with the maximum duration approaching 8,700 days. This narrower range relative to other segments suggests that loans in this category are more likely to either mature or terminate earlier, implying heightened time-sensitive exposure. From a risk management perspective, this reinforces the importance of front-loading credit assessments and repayment safeguards. Underwriting models for this group should prioritize indicators that detect early financial distress, while loan structures may benefit from shorter tenures and faster amortization to contain potential losses.
+
+## Prime Segment: Balanced Risk with Extended Durability
+
+The Prime group exhibits a survival probability that sustains above 50 percent until roughly 8,350 days, with many accounts reaching just above 8,700 days before dropping off. This indicates that loans extended to these borrowers are more durable and predictable over time. Credit strategies for this segment may prioritize longer terms and lower rates, as the segment consistently shows both repayment reliability and endurance. The smoother decline also opens room for bundled financial products and loyalty incentives that can capitalize on customer longevity while reinforcing positive repayment behavior.
+
+## Risky Segment: Sharpened Spread with Risk Tapering Late
+
+Loans categorized under the Risky segment show a steeper descent starting after 8,000 days, but manage to retain a moderate survival window through approximately 8,550 days. Although this segment initially signals higher vulnerability, the extended tail implies that a portion of these loans persist longer than expected, possibly due to renegotiated terms or strong collateral backing. As a result, the implication is not to avoid lending entirely, but to design credit terms with early-warning systems and dynamic restructuring options. Blended pricing models, which combine upfront risk premiums with flexible payoff adjustments, may be well-suited for this group.
+
+## Emerging Segment: Wide Range with Extended Payback Horizon
+
+The Emerging segment displays a broad survival span with its 50 percent threshold close to 8,300 days and maximum survival extending nearly to 8,750 days. Despite being tagged as high risk in other metrics, their survival trajectory implies latent repayment capacity and long-term engagement. This suggests that while Emerging customers may require more flexible and patient lending terms, they should not be excluded from profitable portfolios. Lending frameworks targeting this group should incorporate patient capital approaches, phased disbursements, and performance-based credit expansions that align with their extended repayment timeline.
+
+# XI. Profit and Loss of Loans per Customer Segment
+
+```{r PNL-Loan-by-Segment}
+
+# === Utility: Prepare loan profit dataset ===
+prepare_loan_profit_data <- function(loan_path = "data/loan.csv", customer_path = "data/customer.csv") {
+  # Load
+  loan_data <- read.csv(loan_path, sep = ";", stringsAsFactors = FALSE)
+  customer_data <- read.csv(customer_path, sep = ";", stringsAsFactors = FALSE)
+
+  # Only assign Quadrant if not already present
+  if (!"Quadrant" %in% colnames(customer_data)) {
+    customer_data <- customer_data %>%
+      mutate(
+        CreditScore = as.numeric(CreditScore),
+        RiskScore = as.numeric(RiskScore),
+        Quadrant = case_when(
+          CreditScore >= 600 & RiskScore >= 50 ~ "Volatile",
+          CreditScore >= 600 & RiskScore < 50 ~ "Prime",
+          CreditScore < 600  & RiskScore >= 50 ~ "Risky",
+          CreditScore < 600  & RiskScore < 50 ~ "Emerging"
+        )
+      )
+  }
+
+  # Clean loan data
+  loan_data <- loan_data %>%
+    mutate(
+      StartDate = as.Date(StartDate, format = "%Y-%m-%d"),
+      Year = year(StartDate),
+      PrincipalAmount = as.numeric(PrincipalAmount),
+      TotalPaid = as.numeric(TotalPaid),
+      InterestRate = as.numeric(InterestRate),
+      RecoveryStatus = as.character(RecoveryStatus),
+      InterestIncome = PrincipalAmount * (InterestRate / 100),
+      LoanLoss = ifelse(RecoveryStatus == "Unrecovered", PrincipalAmount - TotalPaid, 0),
+      Profit = InterestIncome - LoanLoss
+    ) %>%
+    distinct(LoanID, .keep_all = TRUE) %>%
+    filter(!is.na(Year), !is.na(PrincipalAmount), !is.na(TotalPaid), !is.na(InterestRate))
+
+  # Merge and return
+  loan_merged <- loan_data %>%
+    inner_join(customer_data %>% select(CustomerID, Quadrant), by = "CustomerID") %>%
+    mutate(Quadrant = factor(Quadrant, levels = c("Volatile", "Prime", "Risky", "Emerging")))
+
+  return(loan_merged)
+}
+
+# Load data once
+loan_merged <- prepare_loan_profit_data()
+
+# === UI ===
+ui <- fluidPage(
+  tags$head(tags$style(HTML("
+    .top-bar {
+      display: flex;
+      justify-content: center;
+      margin-top: 15px;
+      margin-bottom: 20px;
+    }
+  "))),
+  
+  div(class = "top-bar",
+      selectInput("year", "Select Year:", choices = sort(unique(loan_merged$Year)), selected = max(loan_merged$Year))
+  ),
+  
+  plotOutput("profitPlot", height = "650px")
+)
+
+# === Server ===
+server <- function(input, output) {
+  output$profitPlot <- renderPlot({
+    df_filtered <- loan_merged %>%
+      filter(Year == input$year) %>%
+      group_by(Quadrant, LoanType) %>%
+      summarise(AvgProfit = mean(Profit, na.rm = TRUE), .groups = "drop") %>%
+      mutate(Fill = ifelse(AvgProfit >= 0, "#1b9e77", "#FF2E2E"))
+    
+    # Net PnL per quadrant for facet labels
+    pnl_labels <- loan_merged %>%
+      filter(Year == input$year) %>%
+      group_by(Quadrant) %>%
+      summarise(NetPNL = sum(Profit, na.rm = TRUE), .groups = "drop") %>%
+      mutate(
+        Label = paste0(Quadrant, " (", dollar(NetPNL, accuracy = 1), ")"),
+        Quadrant = factor(Quadrant, levels = c("Volatile", "Prime", "Risky", "Emerging"))
+      )
+    
+    label_map <- pnl_labels$Label
+    names(label_map) <- pnl_labels$Quadrant
+    
+    # Plot
+    ggplot(df_filtered, aes(x = reorder(LoanType, AvgProfit), y = AvgProfit, fill = Fill)) +
+      geom_col(width = 0.7) +
+      scale_fill_identity() +
+      scale_y_continuous(labels = dollar_format()) +
+      facet_wrap(~Quadrant, ncol = 1, labeller = labeller(Quadrant = label_map)) +
+      labs(
+        title = paste("Average Loan Profit (Interest – Loss) by Loan Type –", input$year),
+        x = "Loan Type",
+        y = "Average Profit ($)"
+      ) +
+      theme_minimal() +
+      theme(
+        panel.border = element_rect(color = "grey70", fill = NA, linewidth = 0.8),
+        strip.text = element_text(size = 14, face = "bold", color = "grey20"),
+        plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+        axis.title = element_text(size = 14, face = "bold"),
+        axis.text = element_text(size = 12),
+        legend.position = "none"
+      )
+  })
+}
+
+# Run app
+shinyApp(ui = ui, server = server)
+
+```
+
+## Emerging Segment’s Pivotal Role in Margin Expansion
+
+In 2023, the Emerging segment achieved an outstanding turnaround in profitability, with total average loan profit exceeding \$800,000. This dramatic leap from approximately \$390,000 in 2018 reflects strategic credit positioning where flexible repayment structures, combined with elevated recovery rates and risk-adjusted pricing, have aligned to drive substantial returns. Notably, Business and Personal loans contributed the highest margins within this group, each averaging over \$5,000 per loan. These results underscore that despite higher inherent credit risk, Emerging customers can deliver strong financial performance when supported by adaptive loan terms and effective post-default collection pathways.
+
+## Volatile Segment Decline Signals Need for Conservative Structuring
+
+Profitability for the Volatile group fell sharply from roughly \$264,000 in 2018 to just over \$113,000 in 2023, despite maintaining strong returns in Personal loans. This downturn is aligned with earlier insights that suggested Volatile borrowers exhibit inconsistent recovery behavior even when cure rates are reasonably stable. The decline in Auto and Mortgage loan performance within this segment reinforces the need to limit credit exposure or require enhanced security and upfront interest buffers. These findings strengthen the business case for stricter origination filters and shorter loan tenures for higher-risk profiles that lack sustained profitability across products.
+
+## Risky Segment Reflects Turnaround from Loss to Contribution
+
+Although the Risky group saw its overall average profit decline from nearly \$348,000 to \$258,000, the shift in composition is particularly revealing. In 2018, losses in Personal loans offset large gains in Auto and Business lending. By 2023, losses were almost entirely eliminated across loan types, showing that tighter control over borrower selection and improved repayment behavior—also seen in prior cure and time-to-default metrics—translated into more predictable cash flows. This reinforces the critical role of monitoring and recovery frameworks, not only in mitigating defaults but in converting previously volatile categories into viable lending pools.
+
+## Prime Segment Stability Supports Balanced Portfolio Design
+
+The Prime segment, often considered the foundation of safe lending, grew modestly in profitability from \$162,000 to \$200,000 over the five-year period. Though the gain is less pronounced than other segments, its consistency across Auto, Personal, and Business loan types offers portfolio stability. When combined with its earlier recovery metrics and moderate time to default, this reliability highlights the segment’s importance in offsetting volatility from higher-risk groups. This performance confirms that Prime borrowers continue to serve as a hedge against cyclical downturns, and their predictable earnings profile should remain a core component of balanced credit portfolios.
+
+These profit results are deeply interwoven with earlier findings on cure behavior, recovery performance, interest rate alignment, and loan survival duration. Each insight collectively contributes to a refined understanding of where profitability intersects with credit risk exposure. Future decisions on underwriting policy, interest pricing, and collection strategies should build from these interconnected insights to enhance risk-adjusted return on lending capital. Further, what else can we do to enhance future profits in the lending business.
+
+# XII. Customer Risk Profile Dashboard
+
+```{r Customer-Risk-Profile-Dashboard }
+
+# Customer Risk Profile Dashboard
+
+library(plotly)
+library(DT)
+
+# === Safe: Ensure required columns exist ===
+if (!"CreditUtilGroup" %in% names(customer_data) | !"Quadrant" %in% names(customer_data)) {
+  customer_data <- customer_data %>%
+    mutate(
+      CreditUtilGroup = case_when(
+        CreditUtilization < 25 ~ "<25%",
+        CreditUtilization < 50 ~ "25–50%",
+        CreditUtilization < 75 ~ "50–75%",
+        TRUE ~ ">75%"
+      ),
+      Quadrant = case_when(
+        CreditScore >= 600 & RiskScore >= 50 ~ "Volatile",
+        CreditScore >= 600 & RiskScore < 50  ~ "Prime",
+        CreditScore < 600  & RiskScore >= 50 ~ "Risky",
+        CreditScore < 600  & RiskScore < 50  ~ "Emerging"
+      )
+    )
+}
+
+# Ensure MissedPayment is numeric
+loan_data$MissedPayment <- as.numeric(gsub("[^0-9]", "", loan_data$MissedPayment))
+
+# === Join and enrich ===
+merged <- left_join(
+  customer_data %>% select(CustomerID, CreditScore, RiskScore, CreditUtilization, CreditUtilGroup, Quadrant, ScoreDate),
+  loan_data,
+  by = "CustomerID"
+) %>%
+  mutate(
+    DTI = PrincipalAmount / TotalPaid,
+    ScoreDate = as.Date(ScoreDate),
+    AgeOfCredit = as.numeric(difftime(Sys.Date(), ScoreDate, units = "days")) / 365.25
+  )
+
+# === Aggregate risky customers ===
+agg_risk <- merged %>%
+  group_by(CustomerID, CreditScore, RiskScore, CreditUtilization, Quadrant, CreditUtilGroup) %>%
+  summarise(
+    MissedPayment = sum(MissedPayment, na.rm = TRUE),
+    DTI = mean(DTI, na.rm = TRUE),
+    AgeOfCredit = mean(AgeOfCredit, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  filter(
+    CreditUtilization > 30 |
+      MissedPayment >= 1 |
+      DTI > 0.43 |
+      AgeOfCredit < 2
+  ) %>%
+  distinct(CustomerID, .keep_all = TRUE)
+
+# === Visual mappings ===
+size_map <- c("<25%" = 1.5, "25–50%" = 2.5, "50–75%" = 3.5, ">75%" = 4.5)
+quad_colors <- c(
+  "Volatile" = "royalblue",
+  "Prime" = "#1b9e77",
+  "Risky" = "#FF2E2E",
+  "Emerging" = "orange"
+)
+
+# === UI ===
+ui <- fluidPage(
+  titlePanel("Risky Customer Segmentation Chart"),
+  fluidRow(
+    column(12, align = "center",
+           sliderInput("n_customers", "Number of Risky Customers to Show:",
+                       min = 50, max = 500, value = 500, step = 50, width = "500px")
+    )
+  ),
+  fluidRow(
+    column(8, plotlyOutput("riskPlot", height = "700px")),
+    column(4, DTOutput("kpi_table"))
+  )
+)
+
+# === Server ===
+server <- function(input, output) {
+  filtered_data <- reactive({
+    agg_risk %>% head(input$n_customers)
+  })
+  
+  output$riskPlot <- renderPlotly({
+    df <- filtered_data()
+    df$PointSize <- size_map[df$CreditUtilGroup]
+    
+    p <- ggplot(df, aes(x = CreditScore, y = RiskScore,
+                        size = PointSize, fill = Quadrant,
+                        text = paste0(
+                          "CustomerID: ", CustomerID, "<br>",
+                          "Credit Score: ", CreditScore, "<br>",
+                          "Risk Score: ", RiskScore, "<br>",
+                          "Credit Utilization: ", CreditUtilGroup
+                        ))) +
+      geom_vline(xintercept = 600, linetype = "dashed", color = "gray60") +
+      geom_hline(yintercept = 50, linetype = "dashed", color = "gray60") +
+      geom_point(shape = 21, color = "black", alpha = 0.9) +
+      scale_size_identity() +
+      scale_fill_manual(
+        name = "Customer Segment",
+        values = quad_colors,
+        guide = guide_legend(override.aes = list(size = 6))
+      ) +
+      guides(fill = guide_legend(order = 1, title.position = "top")) +
+      theme_minimal(base_size = 11) +
+      labs(x = "Credit Score", y = "Risk Score")
+    
+    ggplotly(p, tooltip = "text") %>% layout(legend = list(orientation = "v"))
+  })
+  
+  output$kpi_table <- renderDT({
+    filtered_data() %>%
+      arrange(desc(CreditUtilization)) %>%
+      select(CustomerID, CreditUtilization, MissedPayment, DTI, AgeOfCredit)
+  }, options = list(pageLength = 10, autoWidth = TRUE))
+}
+
+# === Run App ===
+shinyApp(ui = ui, server = server)
+
+```
+
+## Intelligent Risk Flagging
+
+The dashboard serves as a powerful analytical tool that enhances future lending profitability and mitigates credit risk by dynamically identifying high-risk customer profiles through a strategic filtering mechanism. Designed with flexibility in mind, it allows lenders to interactively screen between 50 to 500 customers based on key financial indicators such as credit score, risk score, credit utilization, missed payments, DTI, and age of credit.
+
+This range supports operational feasibility by adjusting the scale of targeting to fit both time constraints and budget capacity. The underlying code systematically aggregates and visualizes only those borrowers who breach risk thresholds—such as utilization above 30 percent, DTI exceeding 0.43, or limited credit history, making it easier to prioritize interventions where they can have the most financial impact.
+
+As a result, the dashboard becomes a decision-making interface that connects customer-level insights to segment-level strategy, enabling precision in managing delinquency, improving repayment behavior, and ultimately driving sustainable lending profit. Below is a demonstration of insights and actions ones can derive to target and tackle to enhance the profit of future lending.
+
+### Customer Case Examples
+
+### Customer C0330: Targeting Chronic Utilization and Payment Delinquency
+
+-   Credit Utilization: 89.9%
+-   Missed Payments: 2
+-   DTI: 0.68
+-   Age of Credit: 2.38 years
+-   Segment Classification:\*\* Risky (high-risk score, low credit score)
+
+#### Recommended Actions and Implications
+
+#### 1. Implement a structured engagement plan with personalized digital outreach
+
+Given the extremely high utilization and multiple missed payments, this customer exhibits active financial distress. A proactive communication strategy involving tailored messages through SMS, email, or app notifications can educate the borrower on their repayment standing and introduce manageable goals to reduce balance. This mitigates further delinquency by creating behavioral awareness before punitive steps are required.
+
+#### 2. Enforce a soft credit freeze while offering utilization-linked relief programs
+
+New credit issuance or limit extensions should be paused to contain exposure. At the same time, the customer can be offered a hardship program that ties interest reductions or fee waivers to achieving lower utilization milestones (e.g., falling below 75 percent within two months). This simultaneously promotes balance reduction and motivates repayment through tangible benefits.
+
+#### 3. Offer a consolidated loan product to refinance revolving debt
+
+Packaging their outstanding debt into a fixed-rate personal loan with automatic payment enrollment can simplify obligations and decrease the monthly burden. This tactic transforms uncertain repayment behavior into a predictable stream, improving both cash flow forecasting and provisioning estimates on the lending book.
+
+#### 4. Establish a risk-monitoring window and escalate unresolved risk
+
+If no improvement is seen within 90 days, the borrower should be escalated for tighter collections review or early write-down consideration. This preempts late-stage default and aligns well with prior findings that high-risk segments have volatile cure and inconsistent recovery performance.
+
+#### Implication
+
+By placing structured behavioral incentives and financial containment strategies around borrowers like C0330, lenders can reduce delinquency accumulation while still pursuing potential cure. It also supports loss containment, which is critical given this segment’s weaker recovery rates and historically unstable PNL contribution. Proactively reshaping their trajectory can convert a potential charge-off into controlled margin recapture.
+
+#### Customer C0268: Preserving Stability in a Fragile Emerging Profile\*\*
+
+-   Credit Utilization: 88.37%
+-   Missed Payments: 1
+-   DTI:\*\* 0.28
+-   Age of Credit: 2.20 years
+-   Segment Classification: Emerging (moderate risk score, low credit score)
+
+#### Recommended Actions
+
+#### 1. Freeze credit access while rewarding responsible behavior with tiered incentives
+
+Although this customer has not yet shown severe delinquency, the high utilization and recent missed payment signal vulnerability. A preemptive pause on credit expansion prevents debt buildup. Meanwhile, a tiered incentive program can be introduced, offering incremental interest discounts, cashback rewards, or loyalty upgrades if the customer brings utilization below 50 percent and maintains clean payment behavior for three or six months.
+
+#### 2. Introduce a credit builder plan supported by financial literacy tools
+
+Embedding this customer into a structured credit builder program—including simulated payoff scenarios, credit health scores, and behavioral nudges—can promote better financial habits. This is particularly useful given the relatively low DTI and decent credit age, which suggest capacity to manage debt if guided. Helping them mature into the Prime segment aligns with the broader business objective of improving segment profitability without incurring high acquisition costs.
+
+#### 3. Schedule monthly automated reminders and nudges
+
+Encouraging the customer to enable autopay or digital payment reminders can help close the behavior gap associated with their missed payment. This minimizes human error and supports continuity, which is key to maintaining clean records and eventually justifying a limit increase or reclassification to Prime.
+
+#### 4. Assess potential for long-term relationship with dynamic credit modeling
+
+Given the borrower’s profile, lenders may consider offering flexible credit line models that grow in correlation with repayment consistency and improved utilization ratios. This allows the institution to support long-term retention, particularly in cases where customers show healthy DTI but historically low scores due to thin files or legacy delinquencies.
+
+#### Implication
+
+The customer is on the cusp of stability and needs structured support, not restriction. Early engagement increases the chance of migration to a low-risk segment, with lower provisioning, higher yield potential, and improved profitability. Preserving and upgrading borrowers in this tier helps reduce churn while strengthening the overall credit portfolio quality.
+
+### Real-Time Credit Risk Criteria Significance
+
+Integrating these customer-level decisions into broader risk management helps bridge the gap between high-level segment strategy and operational execution. These examples also illustrate how the dashboard becomes a tool for performance acceleration, enabling not just reactive mitigation but proactive risk transformation. The approach builds a dynamic loop between credit policy, behavioral analytics, and bottom-line financial outcomes—directly addressing the core of credit risk modeling in a revenue-driven lending strategy.
+
+# XII. Conclusion
+
+This comprehensive credit risk modeling project, grounded in a full-cycle analysis of simulated customer and loan data, reveals how strategic segmentation, behavioral profiling, and targeted intervention can substantially improve lending performance. By integrating cure rates, recovery behavior, time-to-default distributions, and segment-specific profitability, the findings demonstrate that effective credit management goes beyond static scoring models. Instead, it requires a nuanced understanding of how borrower behavior unfolds over time and how it impacts both risk exposure and financial return.
+
+An interactive dashboard brings these insights into operational reality. It empowers decision-makers to identify at-risk customers based on live behavioral thresholds and prioritize responses according to capacity, urgency, and potential impact. By customizing intervention strategies—such as soft credit freezes, refinancing options, automated nudges, and credit education programs—institutions can reduce defaults, enhance recovery, and improve long-term borrower outcomes. Moreover, segment-level differences in interest rate structures and loan survival support tailored pricing, underwriting, and product design that align with observed risk.
+
+Ultimately, this project offers a scalable blueprint for modern credit portfolio management. It combines analytical rigor with practical usability, enabling financial institutions to move from reactive loss control to proactive, profitable lending. By embedding these data-driven strategies into everyday workflows, organizations can elevate both customer outcomes and portfolio performance—striking a more effective balance between growth and risk.
